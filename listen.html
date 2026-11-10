@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Listener">
+<title>Audio Test Listener</title>
+<style>
+  :root { --bg:#14171b; --card:#1d2228; --line:#2f3740; --text:#e8e8e8; --dim:#9aa3ad;
+          --live:#34c77b; --trace:#4aa3ff; --hold:#ffb347; --ref:#d17dff; --bad:#ff5c5c; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  body { padding:14px 16px calc(16px + env(safe-area-inset-bottom)); -webkit-user-select:none; user-select:none; }
+  h1 { font-size:24px; margin:0 0 10px; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; align-items:center; }
+  button, select { font:inherit; font-size:16px; font-weight:600; color:var(--text);
+    background:var(--card); border:2px solid var(--line); border-radius:10px; padding:11px 14px; }
+  select { font-weight:400; max-width:260px; }
+  button.on { background:#1d5a8a; border-color:var(--trace); }
+  button.hold.on { background:#6b4a14; border-color:var(--hold); }
+  #startBtn { background:#1f6f43; border-color:var(--live); min-width:110px; }
+  #startBtn.running { background:#7a1f1f; border-color:#e04848; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:10px; }
+  #detect { font-size:28px; font-weight:700; }
+  #detect.ok { color:var(--live); }
+  #detail { color:var(--dim); font-size:15px; margin-top:4px; min-height:20px; }
+  .meter { position:relative; height:26px; background:#0d0f12; border-radius:6px; overflow:hidden; margin-top:10px; }
+  #meterFill { position:absolute; left:0; top:0; bottom:0; width:0; background:linear-gradient(90deg,#2aa864 0%,#2aa864 70%,#e0c040 85%,#e04848 100%); }
+  #meterPeak { position:absolute; top:0; bottom:0; width:3px; background:#fff; left:0; }
+  .nums { display:flex; justify-content:space-between; color:var(--dim); font-size:14px; margin-top:5px; }
+  .nums b { color:var(--text); font-size:17px; }
+  canvas { display:block; width:100%; background:#0d0f12; border-radius:8px; }
+  #spec { height:280px; }
+  #hist { height:90px; }
+  .lbl { font-size:12px; letter-spacing:1px; text-transform:uppercase; color:var(--dim); margin:0 0 6px; display:flex; justify-content:space-between; }
+  .legend span { margin-left:12px; text-transform:none; letter-spacing:0; }
+  .grid2 { display:flex; gap:10px; }
+  .grid2 .card { flex:1; }
+  .big { font-size:26px; font-weight:700; }
+  .bad { color:var(--bad); } .good { color:var(--live); }
+  .small { font-size:14px; color:var(--dim); margin-top:4px; }
+  .note { color:#7d8792; font-size:13px; line-height:1.45; }
+  @media (max-width:640px){ .grid2 { flex-direction:column; } }
+</style>
+</head>
+<body>
+<h1>Audio Test Listener</h1>
+
+<div class="bar">
+  <button id="startBtn">Start</button>
+  <select id="inputSel"><option value="">Microphone (default)</option></select>
+  <button id="viewFFT" class="on">Spectrum</button>
+  <button id="viewRTA">RTA ⅓ oct</button>
+  <button id="holdBtn" class="hold">Max hold</button>
+  <button id="refBtn">Save reference</button>
+  <button id="clearBtn">Clear</button>
+  <button id="freezeBtn">Freeze</button>
+</div>
+
+<div class="card">
+  <div id="detect">Tap Start to listen</div>
+  <div id="detail">Uses the built-in mic, or a plugged-in mic adapter if you pick it above.</div>
+  <div class="meter"><div id="meterFill"></div><div id="meterPeak"></div></div>
+  <div class="nums"><span>Level (RMS) <b id="rmsTxt">—</b></span><span>Peak <b id="peakTxt">—</b></span><span>dBFS, −90 … 0</span></div>
+</div>
+
+<div class="card">
+  <div class="lbl"><span id="specTitle">Spectrum</span>
+    <span class="legend"><span style="color:var(--trace)">● live</span><span style="color:var(--hold)">● max hold</span><span style="color:var(--ref)">● reference</span></span></div>
+  <canvas id="spec"></canvas>
+</div>
+
+<div class="card">
+  <div class="lbl"><span>Level history — last 10 s</span><span>dropouts, L/R alternating, hum when idle</span></div>
+  <canvas id="hist"></canvas>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <div class="lbl"><span>Polarity (pulse signal)</span></div>
+    <div class="big" id="polTxt">—</div>
+    <div class="small" id="polDetail">Play "Polarity" on the generator and hold the mic close to one speaker.</div>
+    <div style="margin-top:8px"><button id="polRefBtn">Set as reference</button></div>
+  </div>
+  <div class="card">
+    <div class="lbl"><span>Hum check</span></div>
+    <div class="big" id="humTxt">—</div>
+    <div class="small" id="humDetail">Stop the generator and listen with the system turned up.</div>
+  </div>
+</div>
+
+<div class="note">
+  Readings are relative (dBFS from the mic), not calibrated sound pressure — use them for pass/fail and before/after comparisons.
+  <b>Sweep:</b> turn on Max hold, play one full sweep, and the orange line traces that speaker's response. Save it as a reference to compare other speakers.
+  <b>Pink noise:</b> use RTA view; a healthy full-range speaker shows a fairly even, slowly falling line with no deep holes.
+  <b>Polarity:</b> set a known-good speaker as reference, then check the others — "REVERSED" means a wiring swap.
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+let ctx = null, stream = null, srcNode = null, analyser = null, proc = null, mute = null;
+let running = false, frozen = false, view = "fft", maxHold = false, wakeLock = null;
+let freqDB = null, timeBuf = null, sr = 48000;
+let maxArr = null, refArr = null, refView = null;
+const history = [];                // {t, db}
+const freqTrail = [];              // recent detected tone freqs, for sweep detection
+let peakHold = -120, peakHoldT = 0;
+
+const TEST_TONES = [100, 440, 1000, 3000, 10000];
+const RTA_CENTERS = []; for (let n = -16; n <= 13; n++) RTA_CENTERS.push(1000 * Math.pow(2, n / 3));
+const RTA_NOMINAL = [25,31.5,40,50,63,80,100,125,160,200,250,315,400,500,630,800,"1k","1.25k","1.6k","2k","2.5k","3.15k","4k","5k","6.3k","8k","10k","12.5k","16k","20k"];
+
+// ---------- polarity state (filled by the audio processor) ----------
+const pol = { env: 0.01, lockUntil: 0, counter: 0, recent: [], lastTime: 0, ref: null, total: 0 };
+
+// ---------- helpers ----------
+const db = x => 20 * Math.log10(Math.max(x, 1e-9));
+function fmtHz(f) {
+  if (f < 995) return Math.round(f) + " Hz";
+  const k = f / 1000;
+  return (Math.abs(k - Math.round(k)) < 0.01 ? Math.round(k) : k.toFixed(k >= 10 ? 1 : 2)) + " kHz";
+}
+function setDetect(t, d, ok) { $("detect").textContent = t; $("detail").textContent = d || ""; $("detect").className = ok ? "ok" : ""; }
+
+function ensureCtx() {
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (ctx.state === "suspended") ctx.resume();   // must happen inside the tap
+}
+
+// ---------- start / stop ----------
+async function start(deviceId) {
+  stopAudio();
+  const c = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+  if (deviceId) c.deviceId = { exact: deviceId };
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: c });
+  } catch (e) {
+    setDetect("Microphone not available", "Allow microphone access (Settings › Safari › Microphone), then tap Start again. (" + e.name + ")");
+    return;
+  }
+  if (ctx.state === "suspended") { try { await ctx.resume(); } catch (e) {} }
+  sr = ctx.sampleRate;
+  srcNode = ctx.createMediaStreamSource(stream);
+
+  analyser = ctx.createAnalyser();
+  analyser.fftSize = 16384;
+  analyser.smoothingTimeConstant = 0.5;
+  analyser.minDecibels = -140; analyser.maxDecibels = 0;
+  srcNode.connect(analyser);
+  freqDB = new Float32Array(analyser.frequencyBinCount);
+  timeBuf = new Float32Array(4096);
+
+  // sample-accurate pulse detector for the polarity check
+  proc = ctx.createScriptProcessor(2048, 1, 1);
+  mute = ctx.createGain(); mute.gain.value = 0;
+  proc.onaudioprocess = onSamples;
+  srcNode.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+
+  running = true;
+  $("startBtn").textContent = "Stop"; $("startBtn").classList.add("running");
+  setDetect("Listening…", "");
+  refreshInputs();
+  try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+}
+
+function stopAudio() {
+  running = false;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  [srcNode, analyser, proc, mute].forEach(n => { try { n && n.disconnect(); } catch (e) {} });
+  stream = srcNode = analyser = proc = mute = null;
+  if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
+  $("startBtn").textContent = "Start"; $("startBtn").classList.remove("running");
+}
+
+async function refreshInputs() {
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput");
+    const sel = $("inputSel");
+    const cur = stream ? (stream.getAudioTracks()[0].getSettings().deviceId || "") : sel.value;
+    sel.innerHTML = "";
+    devs.forEach((d, i) => {
+      const o = document.createElement("option");
+      o.value = d.deviceId; o.textContent = d.label || ("Input " + (i + 1));
+      sel.appendChild(o);
+    });
+    if (!devs.length) sel.innerHTML = '<option value="">Microphone (default)</option>';
+    if (cur) sel.value = cur;
+  } catch (e) {}
+}
+
+// ---------- pulse / polarity detection (runs on raw samples) ----------
+function onSamples(e) {
+  const x = e.inputBuffer.getChannelData(0);
+  for (let i = 0; i < x.length; i++) {
+    const v = x[i], a = Math.abs(v);
+    if (pol.counter >= pol.lockUntil && a > 0.02 && a > pol.env * 12) {
+      // sign of the first strong excursion = direction the speaker moved
+      registerPulse(v > 0 ? 1 : -1);
+      pol.lockUntil = pol.counter + sr * 0.3;
+    }
+    pol.env = pol.env * 0.9995 + a * 0.0005;
+    pol.counter++;
+  }
+}
+function registerPulse(sign) {
+  pol.recent.push(sign); if (pol.recent.length > 6) pol.recent.shift();
+  pol.lastTime = performance.now(); pol.total++;
+}
+function polMajority() {
+  if (pol.recent.length < 3) return 0;
+  const s = pol.recent.reduce((a, b) => a + b, 0);
+  return s > 0 ? 1 : s < 0 ? -1 : 0;
+}
+
+// ---------- analysis ----------
+function binOf(f) { return Math.round(f * analyser.fftSize / sr); }
+
+function rtaBands(src) {
+  const out = new Float32Array(RTA_CENTERS.length);
+  const k = Math.pow(2, 1 / 6);
+  RTA_CENTERS.forEach((fc, i) => {
+    const lo = Math.max(1, Math.floor(fc / k * analyser.fftSize / sr));
+    const hi = Math.min(src.length - 1, Math.ceil(fc * k * analyser.fftSize / sr));
+    let p = 0;
+    for (let b = lo; b <= hi; b++) p += Math.pow(10, src[b] / 10);
+    out[i] = 10 * Math.log10(Math.max(p, 1e-14));
+  });
+  return out;
+}
+
+function median(arr) { const a = Array.from(arr).sort((x, y) => x - y); return a[a.length >> 1]; }
+
+function analyse(rmsDb) {
+  const lo = binOf(40), hi = Math.min(binOf(20000), freqDB.length - 2);
+  let mx = -Infinity, mi = lo;
+  for (let b = lo; b <= hi; b++) if (freqDB[b] > mx) { mx = freqDB[b]; mi = b; }
+  const floor = median(freqDB.subarray(lo, hi));
+  const pulsing = performance.now() - pol.lastTime < 1600 && pol.total >= 2;
+
+  if (rmsDb < -72) {
+    setDetect("Quiet", "No signal reaching the mic (or very low). Noise floor " + rmsDb.toFixed(0) + " dBFS.");
+    freqTrail.length = 0;
+    return;
+  }
+  if (pulsing) {
+    setDetect("Pulses detected", "Polarity test signal — see the Polarity box.", true);
+    return;
+  }
+  if (mx - floor > 35) {
+    // parabolic interpolation for an accurate frequency
+    const a = freqDB[mi - 1], b = freqDB[mi], c = freqDB[mi + 1];
+    const p = (a - 2 * b + c) !== 0 ? 0.5 * (a - c) / (a - 2 * b + c) : 0;
+    const f = (mi + p) * sr / analyser.fftSize;
+    freqTrail.push(f); if (freqTrail.length > 12) freqTrail.shift();
+
+    let moving = false;
+    if (freqTrail.length >= 8) {
+      const r = freqTrail[freqTrail.length - 1] / freqTrail[0];
+      moving = r > 1.3 || r < 0.77;
+    }
+    if (moving) {
+      setDetect("Sweep — " + fmtHz(f), "Use Max hold to capture the whole sweep.", true);
+      return;
+    }
+    const match = TEST_TONES.find(t => Math.abs(f - t) / t < 0.03);
+    if (!match && f < 400 && [60, 120, 180, 240, 300, 360].some(h => Math.abs(f - h) < 2)) {
+      setDetect("Hum " + Math.round(f) + " Hz  ·  " + rmsDb.toFixed(1) + " dBFS", "Mains hum, likely a ground loop or bad cable. Try the DI's ground lift.");
+      return;
+    }
+    setDetect("Tone " + fmtHz(f) + "  ·  " + rmsDb.toFixed(1) + " dBFS",
+      match ? "Matches the generator's " + fmtHz(match) + " test tone ✓" : "Steady tone (not one of the generator's presets).", !!match);
+    return;
+  }
+  freqTrail.length = 0;
+  setDetect("Broadband sound  ·  " + rmsDb.toFixed(1) + " dBFS", "Pink noise, voice or music. RTA view is best for pink noise.", true);
+}
+
+function humCheck() {
+  const lo = binOf(30), hi = binOf(400);
+  const floor = median(freqDB.subarray(lo, hi));
+  const out = [];
+  [60, 120, 180].forEach(h => {
+    const b = binOf(h); let m = -Infinity;
+    for (let k = b - 2; k <= b + 2; k++) m = Math.max(m, freqDB[k]);
+    out.push({ h, rise: m - floor, lvl: m });
+  });
+  const worst = out.reduce((a, b) => (b.rise > a.rise ? b : a));
+  if (worst.rise > 20) {
+    $("humTxt").innerHTML = '<span class="bad">Hum at ' + worst.h + ' Hz</span>';
+  } else if (worst.rise > 10) {
+    $("humTxt").innerHTML = '<span style="color:var(--hold)">Slight hum</span>';
+  } else {
+    $("humTxt").innerHTML = '<span class="good">No hum</span>';
+  }
+  $("humDetail").textContent = out.map(o => o.h + " Hz: +" + Math.max(0, o.rise).toFixed(0) + " dB").join("   ") + "  (above background)";
+}
+
+function updatePolarity() {
+  const maj = polMajority();
+  const age = performance.now() - pol.lastTime;
+  if (pol.recent.length < 3 || age > 5000) {
+    $("polTxt").textContent = "—";
+    $("polDetail").textContent = pol.ref ? "Reference saved (" + (pol.ref > 0 ? "+" : "−") + "). Move to the next speaker." : "Play \"Polarity\" on the generator and hold the mic close to one speaker.";
+    return;
+  }
+  const plus = pol.recent.filter(s => s > 0).length, n = pol.recent.length;
+  const signTxt = maj > 0 ? "+" : maj < 0 ? "−" : "?";
+  if (pol.ref && maj) {
+    const same = maj === pol.ref;
+    $("polTxt").innerHTML = same ? '<span class="good">Matches reference</span>' : '<span class="bad">REVERSED</span>';
+  } else {
+    $("polTxt").textContent = "Pulse: " + signTxt;
+  }
+  $("polDetail").textContent = "Last " + n + " pulses: " + plus + " +, " + (n - plus) + " −" + (maj === 0 ? "  — inconsistent, move the mic closer" : "");
+}
+
+// ---------- drawing ----------
+function fitCanvas(cv) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.round(cv.clientWidth * dpr), h = Math.round(cv.clientHeight * dpr);
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { g, W: cv.clientWidth, H: cv.clientHeight };
+}
+
+const F_LO = 20, F_HI = 20000, DB_LO = -120, DB_HI = 0;
+const xOfF = (f, W) => Math.log10(f / F_LO) / Math.log10(F_HI / F_LO) * W;
+const yOfDb = (d, H) => (1 - (Math.min(DB_HI, Math.max(DB_LO, d)) - DB_LO) / (DB_HI - DB_LO)) * H;
+
+function drawGrid(g, W, H) {
+  g.fillStyle = "#0d0f12"; g.fillRect(0, 0, W, H);
+  g.strokeStyle = "#222a32"; g.lineWidth = 1; g.fillStyle = "#6b7580"; g.font = "11px -apple-system, sans-serif";
+  [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].forEach(f => {
+    const x = Math.round(xOfF(f, W)) + 0.5; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+    g.fillText(f >= 1000 ? f / 1000 + "k" : f, Math.min(x + 3, W - 22), H - 4);
+  });
+  for (let d = DB_HI; d >= DB_LO; d -= 20) {
+    const y = Math.round(yOfDb(d, H)) + 0.5; g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+    if (d < DB_HI && d > DB_LO) g.fillText(d, 3, y - 3);
+  }
+}
+
+function drawFFTLine(g, W, H, arr, color, width, dash) {
+  const cols = new Float32Array(Math.ceil(W) + 1).fill(-Infinity);
+  const binHz = sr / analyser.fftSize;
+  const b0 = Math.max(1, Math.floor(F_LO / binHz)), b1 = Math.min(arr.length - 1, Math.ceil(F_HI / binHz));
+  for (let b = b0; b <= b1; b++) {
+    const x = Math.round(xOfF(b * binHz, W));
+    if (x >= 0 && x < cols.length && arr[b] > cols[x]) cols[x] = arr[b];
+  }
+  g.strokeStyle = color; g.lineWidth = width; g.setLineDash(dash || []); g.beginPath();
+  let first = true;
+  for (let x = 0; x < cols.length; x++) {
+    if (cols[x] === -Infinity) continue;
+    const y = yOfDb(cols[x], H);
+    if (first) { g.moveTo(x, y); first = false; } else g.lineTo(x, y);
+  }
+  g.stroke(); g.setLineDash([]);
+}
+
+function drawRTA(g, W, H, bands, hold, ref) {
+  const n = bands.length, bw = W / n;
+  // offset so pink noise sits mid-screen regardless of mic sensitivity is not attempted: absolute dBFS bands
+  for (let i = 0; i < n; i++) {
+    const y = yOfDb(bands[i], H);
+    g.fillStyle = "rgba(74,163,255,0.75)"; g.fillRect(i * bw + 1, y, bw - 2, H - y);
+  }
+  const stepLine = (arr, color, dash) => {
+    g.strokeStyle = color; g.lineWidth = 2; g.setLineDash(dash || []); g.beginPath();
+    for (let i = 0; i < n; i++) { const y = yOfDb(arr[i], H); if (i === 0) g.moveTo(0, y); else g.lineTo(i * bw, y); g.lineTo((i + 1) * bw, y); }
+    g.stroke(); g.setLineDash([]);
+  };
+  if (hold) stepLine(hold, "#ffb347");
+  if (ref) stepLine(ref, "#d17dff", [6, 4]);
+  g.fillStyle = "#6b7580"; g.font = "10px -apple-system, sans-serif";
+  for (let i = 0; i < n; i += 3) g.fillText(RTA_NOMINAL[i], i * bw + 2, H - 4);
+}
+
+let lastBands = null;
+function drawSpectrum() {
+  const { g, W, H } = fitCanvas($("spec"));
+  if (view === "fft") {
+    drawGrid(g, W, H);
+    if (!freqDB) return;
+    if (refArr && refView === "fft") drawFFTLine(g, W, H, refArr, "#d17dff", 1.5, [6, 4]);
+    if (maxHold && maxArr) drawFFTLine(g, W, H, maxArr, "#ffb347", 1.5);
+    drawFFTLine(g, W, H, freqDB, "#4aa3ff", 1.5);
+  } else {
+    g.fillStyle = "#0d0f12"; g.fillRect(0, 0, W, H);
+    g.strokeStyle = "#222a32"; g.fillStyle = "#6b7580"; g.font = "11px -apple-system, sans-serif";
+    for (let d = DB_HI; d >= DB_LO; d -= 20) { const y = Math.round(yOfDb(d, H)) + 0.5; g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); if (d < DB_HI && d > DB_LO) g.fillText(d, 3, y - 3); }
+    if (!lastBands) return;
+    drawRTA(g, W, H, lastBands, maxHold ? maxArr : null, refArr && refView === "rta" ? refArr : null);
+  }
+}
+
+function drawHistory() {
+  const { g, W, H } = fitCanvas($("hist"));
+  g.fillStyle = "#0d0f12"; g.fillRect(0, 0, W, H);
+  g.strokeStyle = "#222a32"; g.fillStyle = "#6b7580"; g.font = "10px -apple-system, sans-serif";
+  [-20, -40, -60, -80].forEach(d => { const y = (-d / 90) * H; g.beginPath(); g.moveTo(0, y + 0.5); g.lineTo(W, y + 0.5); g.stroke(); g.fillText(d, 3, y - 2); });
+  if (history.length < 2) return;
+  const now = performance.now();
+  g.strokeStyle = "#34c77b"; g.lineWidth = 1.5; g.beginPath();
+  history.forEach((p, i) => {
+    const x = W - (now - p.t) / 10000 * W, y = Math.min(H, (-Math.max(-90, p.db) / 90) * H);
+    if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+  });
+  g.stroke();
+}
+
+// ---------- main loop ----------
+let lastSlow = 0;
+function frame() {
+  requestAnimationFrame(frame);
+  if (running && analyser && !frozen) {
+    analyser.getFloatFrequencyData(freqDB);
+    analyser.getFloatTimeDomainData(timeBuf);
+    let sum = 0, pk = 0;
+    for (let i = 0; i < timeBuf.length; i++) { const v = timeBuf[i]; sum += v * v; const a = Math.abs(v); if (a > pk) pk = a; }
+    const rmsDb = db(Math.sqrt(sum / timeBuf.length)), pkDb = db(pk);
+    const now = performance.now();
+    if (pkDb > peakHold || now - peakHoldT > 1500) { peakHold = pkDb; peakHoldT = now; }
+
+    $("meterFill").style.width = Math.max(0, Math.min(100, (rmsDb + 90) / 90 * 100)) + "%";
+    $("meterPeak").style.left = Math.max(0, Math.min(99.5, (peakHold + 90) / 90 * 100)) + "%";
+    $("rmsTxt").textContent = rmsDb.toFixed(1);
+    $("peakTxt").textContent = pkDb.toFixed(1) + (pkDb > -1 ? " CLIP!" : "");
+
+    history.push({ t: now, db: rmsDb });
+    while (history.length && now - history[0].t > 10000) history.shift();
+
+    lastBands = rtaBands(freqDB);
+    if (maxHold) {
+      const cur = view === "fft" ? freqDB : lastBands;
+      if (!maxArr || maxArr.length !== cur.length) maxArr = Float32Array.from(cur);
+      else for (let i = 0; i < cur.length; i++) if (cur[i] > maxArr[i]) maxArr[i] = cur[i];
+    }
+
+    if (now - lastSlow > 250) {      // text readouts 4x a second so they're readable
+      lastSlow = now;
+      analyse(rmsDb); humCheck(); updatePolarity();
+    }
+  }
+  drawSpectrum(); drawHistory();
+}
+requestAnimationFrame(frame);
+
+// ---------- buttons ----------
+$("startBtn").addEventListener("click", () => {
+  if (running) { stopAudio(); setDetect("Stopped", "Tap Start to listen again."); return; }
+  ensureCtx(); start($("inputSel").value || null);
+});
+$("inputSel").addEventListener("change", () => { if (running) { ensureCtx(); start($("inputSel").value || null); } });
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener)
+  navigator.mediaDevices.addEventListener("devicechange", refreshInputs);
+
+function setView(v) {
+  view = v; maxArr = null;
+  $("viewFFT").classList.toggle("on", v === "fft"); $("viewRTA").classList.toggle("on", v === "rta");
+  $("specTitle").textContent = v === "fft" ? "Spectrum" : "RTA — ⅓ octave bands";
+}
+$("viewFFT").addEventListener("click", () => setView("fft"));
+$("viewRTA").addEventListener("click", () => setView("rta"));
+$("holdBtn").addEventListener("click", () => { maxHold = !maxHold; maxArr = null; $("holdBtn").classList.toggle("on", maxHold); });
+$("refBtn").addEventListener("click", () => {
+  const srcArr = maxHold && maxArr ? maxArr : (view === "fft" ? freqDB : lastBands);
+  if (!srcArr) return;
+  refArr = Float32Array.from(srcArr); refView = view;
+  $("refBtn").textContent = "Reference saved ✓";
+  setTimeout(() => { $("refBtn").textContent = "Save reference"; }, 1500);
+});
+$("clearBtn").addEventListener("click", () => { maxArr = null; refArr = null; refView = null; history.length = 0; pol.recent = []; pol.total = 0; pol.ref = null; });
+$("freezeBtn").addEventListener("click", () => { frozen = !frozen; $("freezeBtn").classList.toggle("on", frozen); $("freezeBtn").textContent = frozen ? "Frozen" : "Freeze"; });
+$("polRefBtn").addEventListener("click", () => {
+  const m = polMajority();
+  if (!m) { $("polDetail").textContent = "Need a few steady pulses first."; return; }
+  pol.ref = m; pol.recent = [];
+  $("polDetail").textContent = "Reference saved. Move the mic to the next speaker.";
+});
+
+// offline support (works after the first visit)
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("listen-sw.js").catch(() => {});
+</script>
+</body>
+</html>
