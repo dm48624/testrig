@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html manifest="testrig.appcache">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Test Rig">
+<title>Audio Test Rig</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: rgba(0,0,0,0); }
+  html, body { margin: 0; padding: 0; background: #15181c; color: #e8e8e8;
+    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  body { padding: 16px; -webkit-user-select: none; user-select: none; }
+  h1 { margin: 0 0 4px 0; font-size: 26px; }
+  .sub { color: #9aa3ad; font-size: 14px; margin-bottom: 14px; }
+  .group { margin-bottom: 14px; }
+  .label { font-size: 13px; text-transform: uppercase; letter-spacing: 1px;
+    color: #9aa3ad; margin: 0 0 6px 2px; }
+  .row { display: -webkit-box; display: -webkit-flex; display: flex; }
+  .row .btn { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; margin-right: 8px; }
+  .row .btn:last-child { margin-right: 0; }
+  .btn { display: block; border: 2px solid #3a424c; background: #232830; color: #e8e8e8;
+    border-radius: 10px; padding: 18px 6px; font-size: 18px; text-align: center;
+    font-weight: 600; cursor: pointer; }
+  .btn.on { background: #1f6f43; border-color: #34c77b; color: #fff; }
+  .btn.sig.on { background: #1d5a8a; border-color: #4aa3ff; }
+  .btn small { display: block; font-size: 12px; font-weight: 400; color: #b8c0c8; margin-top: 3px; }
+  .btn.on small { color: #e0f0ff; }
+  #stop { background: #7a1f1f; border-color: #e04848; font-size: 28px; padding: 26px 6px;
+    margin-top: 6px; }
+  #status { margin-top: 14px; padding: 14px; border-radius: 10px; background: #0d0f12;
+    border: 1px solid #2c333b; font-size: 18px; text-align: center; min-height: 54px; }
+  #status.live { border-color: #34c77b; color: #8ff0b8; }
+  #warn { color: #ffb347; font-size: 14px; text-align: center; margin-top: 8px; min-height: 18px; }
+  .note { color: #7d8792; font-size: 13px; margin-top: 14px; line-height: 1.4; }
+</style>
+</head>
+<body>
+
+<h1>Audio Test Rig</h1>
+<div class="sub">Set the iPad volume to your marked position before testing.</div>
+
+<div class="group">
+  <div class="label">Signal</div>
+  <div class="row">
+    <div class="btn sig" data-sig="tone">Tone<small>steady sine</small></div>
+    <div class="btn sig" data-sig="sweep">Sweep<small>20 Hz – 20 kHz</small></div>
+    <div class="btn sig" data-sig="pink">Pink Noise<small>EQ / speakers</small></div>
+    <div class="btn sig" data-sig="pulse">Polarity<small>1 pulse / sec</small></div>
+    <div class="btn sig" data-sig="voice">Voice<small>spoken check</small></div>
+  </div>
+</div>
+
+<div class="group">
+  <div class="label">Tone frequency</div>
+  <div class="row">
+    <div class="btn" data-freq="100">100 Hz</div>
+    <div class="btn" data-freq="440">440 Hz</div>
+    <div class="btn" data-freq="1000">1 kHz</div>
+    <div class="btn" data-freq="3000">3 kHz</div>
+    <div class="btn" data-freq="10000">10 kHz</div>
+  </div>
+</div>
+
+<div class="group">
+  <div class="label">Level (dBFS)</div>
+  <div class="row">
+    <div class="btn" data-level="-40">−40</div>
+    <div class="btn" data-level="-30">−30</div>
+    <div class="btn" data-level="-20">−20</div>
+    <div class="btn" data-level="-12">−12</div>
+    <div class="btn" data-level="-6">−6</div>
+    <div class="btn" data-level="0">0</div>
+  </div>
+</div>
+
+<div class="group">
+  <div class="label">Output</div>
+  <div class="row">
+    <div class="btn" data-chan="left">Left</div>
+    <div class="btn" data-chan="both">Both</div>
+    <div class="btn" data-chan="right">Right</div>
+    <div class="btn" data-chan="alt">Alternate<small>L / R each second</small></div>
+  </div>
+</div>
+
+<div class="btn" id="stop">STOP</div>
+<div id="status">Stopped — tap a signal to start</div>
+<div id="warn"></div>
+
+<div class="note">
+  Tone, Sweep, Pink Noise and Polarity follow the Level and Output settings.
+  Voice uses the iPad's built-in speech, plays on both sides, and its loudness is set by the iPad volume only.
+  Polarity: a correctly wired speaker pushes outward on each pulse.
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var AC = window.AudioContext || window.webkitAudioContext;
+  var ctx = null;
+  var merger = null;
+  var gainL = null, gainR = null;   // per-channel output gains
+  var env = null;                   // fade in/out envelope
+  var src = null;                   // current source node
+  var timers = [];
+  var pinkBuf = null, pulseBuf = null;
+  var playing = null;
+  var altLeft = true;
+  var speaking = false;
+
+  var state = { freq: 1000, level: -20, chan: "both" };
+  var SWEEP_SECONDS = 10;
+
+  var FREQ_NAMES = { 100: "100 Hz", 440: "440 Hz", 1000: "1 kHz", 3000: "3 kHz", 10000: "10 kHz" };
+  var SIG_NAMES = { tone: "Tone", sweep: "Sweep 20 Hz–20 kHz", pink: "Pink noise",
+    pulse: "Polarity pulse", voice: "Voice check" };
+  var CHAN_NAMES = { left: "Left only", right: "Right only", both: "Both sides", alt: "Alternating L/R" };
+
+  // ---------- helpers for old (webkit-prefixed) Web Audio ----------
+  function mkGain() { return ctx.createGain ? ctx.createGain() : ctx.createGainNode(); }
+  function startNode(n, t) { if (n.start) { n.start(t || 0); } else { n.noteOn(t || 0); } }
+  function stopNode(n, t) {
+    try { if (n.stop) { n.stop(t || 0); } else { n.noteOff(t || 0); } } catch (e) {}
+  }
+  function dbToGain(db) { return Math.pow(10, db / 20); }
+
+  function initAudio() {
+    if (ctx) { return true; }
+    if (!AC) { setStatus("This browser has no Web Audio support", false); return false; }
+    ctx = new AC();
+    merger = ctx.createChannelMerger(2);
+    merger.connect(ctx.destination);
+    gainL = mkGain(); gainR = mkGain();
+    gainL.gain.value = 0; gainR.gain.value = 0;
+    gainL.connect(merger, 0, 0);
+    gainR.connect(merger, 0, 1);
+    // play a silent buffer inside the tap so iOS unlocks audio
+    var b = ctx.createBuffer(1, 1, 22050);
+    var s = ctx.createBufferSource();
+    s.buffer = b; s.connect(ctx.destination); startNode(s, 0);
+    if (ctx.resume && ctx.state === "suspended") { ctx.resume(); }
+    return true;
+  }
+
+  // ---------- pre-built buffers ----------
+  function makePink() {
+    var len = ctx.sampleRate * 6;
+    var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    var d = buf.getChannelData(0);
+    var b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, peak = 0, i, w, v;
+    for (i = 0; i < len; i++) {        // Paul Kellet's pink filter
+      w = Math.random() * 2 - 1;
+      b0 = 0.99886 * b0 + w * 0.0555179;
+      b1 = 0.99332 * b1 + w * 0.0750759;
+      b2 = 0.96900 * b2 + w * 0.1538520;
+      b3 = 0.86650 * b3 + w * 0.3104856;
+      b4 = 0.55000 * b4 + w * 0.5329522;
+      b5 = -0.7616 * b5 - w * 0.0168980;
+      v = b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362;
+      b6 = w * 0.115926;
+      d[i] = v;
+      if (Math.abs(v) > peak) { peak = Math.abs(v); }
+    }
+    for (i = 0; i < len; i++) { d[i] = d[i] / peak; }
+    // short crossfade at the loop point to avoid a click
+    var fade = Math.floor(ctx.sampleRate * 0.02);
+    for (i = 0; i < fade; i++) {
+      var g = i / fade;
+      d[i] = d[i] * g + d[len - fade + i] * (1 - g);
+    }
+    return buf;
+  }
+
+  function makePulse() {
+    // one second long: a sharp positive half-sine, then a slow, small negative
+    // tail so there is no DC offset. Looped = one pulse per second.
+    var sr = ctx.sampleRate;
+    var buf = ctx.createBuffer(1, sr, sr);
+    var d = buf.getChannelData(0);
+    var up = Math.max(2, Math.floor(sr * 0.0008));
+    var tail = Math.floor(sr * 0.04);
+    var area = 0, i;
+    for (i = 0; i < up; i++) { d[i] = Math.sin(Math.PI * i / up); area += d[i]; }
+    var neg = area / tail;
+    for (i = up; i < up + tail; i++) { d[i] = -neg; }
+    return buf;
+  }
+
+  // ---------- output routing / level ----------
+  function applyRouting(rampTime) {
+    if (!ctx) { return; }
+    var g = dbToGain(state.level);
+    var l = 0, r = 0;
+    if (state.chan === "left") { l = g; }
+    else if (state.chan === "right") { r = g; }
+    else if (state.chan === "both") { l = g; r = g; }
+    else if (state.chan === "alt") { if (altLeft) { l = g; } else { r = g; } }
+    var t = ctx.currentTime;
+    var rt = rampTime || 0.02;
+    gainL.gain.cancelScheduledValues(t);
+    gainR.gain.cancelScheduledValues(t);
+    gainL.gain.setValueAtTime(gainL.gain.value, t);
+    gainR.gain.setValueAtTime(gainR.gain.value, t);
+    gainL.gain.linearRampToValueAtTime(l, t + rt);
+    gainR.gain.linearRampToValueAtTime(r, t + rt);
+  }
+
+  function startAltTimer() {
+    timers.push(setInterval(function () {
+      if (state.chan === "alt" && playing && playing !== "voice") {
+        altLeft = !altLeft;
+        applyRouting(0.01);
+        showStatus();
+      }
+    }, 1000));
+  }
+
+  // ---------- start / stop ----------
+  function clearTimers() {
+    for (var i = 0; i < timers.length; i++) { clearInterval(timers[i]); clearTimeout(timers[i]); }
+    timers = [];
+  }
+
+  function stopAll() {
+    clearTimers();
+    if (speaking && window.speechSynthesis) { speaking = false; window.speechSynthesis.cancel(); }
+    if (ctx && env && src) {
+      var t = ctx.currentTime;
+      env.gain.cancelScheduledValues(t);
+      env.gain.setValueAtTime(env.gain.value, t);
+      env.gain.linearRampToValueAtTime(0, t + 0.05);
+      stopNode(src, t + 0.08);
+    }
+    src = null; env = null;
+    playing = null;
+  }
+
+  function connectSource(node) {
+    env = mkGain();
+    env.gain.value = 0;
+    node.connect(env);
+    env.connect(gainL);
+    env.connect(gainR);
+    src = node;
+    var t = ctx.currentTime;
+    env.gain.setValueAtTime(0, t);
+    env.gain.linearRampToValueAtTime(1, t + 0.05);
+    startNode(node, t);
+  }
+
+  function scheduleSweep(osc, t) {
+    osc.frequency.cancelScheduledValues(t);
+    osc.frequency.setValueAtTime(20, t);
+    osc.frequency.exponentialRampToValueAtTime(20000, t + SWEEP_SECONDS);
+  }
+
+  function play(sig) {
+    if (sig === "voice") { stopAll(); playVoice(); return; }
+    if (!initAudio()) { return; }
+    stopAll();
+    altLeft = true;
+    applyRouting(0.02);
+    var node;
+
+    if (sig === "tone") {
+      node = ctx.createOscillator();
+      node.type = "sine";
+      node.frequency.value = state.freq;
+      connectSource(node);
+    } else if (sig === "sweep") {
+      node = ctx.createOscillator();
+      node.type = "sine";
+      connectSource(node);
+      scheduleSweep(node, ctx.currentTime);
+      var sweepStart = ctx.currentTime;
+      timers.push(setInterval(function () {
+        if (src === node) {
+          scheduleSweep(node, ctx.currentTime);
+          sweepStart = ctx.currentTime;
+        }
+      }, (SWEEP_SECONDS + 1) * 1000));
+      timers.push(setInterval(function () {
+        if (src !== node) { return; }
+        var el = ctx.currentTime - sweepStart;
+        if (el > SWEEP_SECONDS) { setStatusExtra("restarting…"); return; }
+        var f = 20 * Math.pow(1000, el / SWEEP_SECONDS);
+        setStatusExtra(f < 1000 ? Math.round(f) + " Hz" : (f / 1000).toFixed(1) + " kHz");
+      }, 200));
+    } else if (sig === "pink") {
+      if (!pinkBuf) { pinkBuf = makePink(); }
+      node = ctx.createBufferSource();
+      node.buffer = pinkBuf; node.loop = true;
+      connectSource(node);
+    } else if (sig === "pulse") {
+      if (!pulseBuf) { pulseBuf = makePulse(); }
+      node = ctx.createBufferSource();
+      node.buffer = pulseBuf; node.loop = true;
+      connectSource(node);
+    }
+    playing = sig;
+    startAltTimer();
+    showStatus();
+  }
+
+  function playVoice() {
+    if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+      setStatus("Speech not available on this device", false);
+      return;
+    }
+    playing = "voice";
+    speaking = true;
+    var lines = ["Testing, one, two, three.", "Check, check. Sound check.",
+      "This is the voice test. Sibilance: six slippery snails slid slowly seaward."];
+    var idx = 0;
+    function next() {
+      if (!speaking) { return; }
+      var u = new SpeechSynthesisUtterance(lines[idx % lines.length]);
+      u.rate = 0.9;
+      u.onend = function () { if (speaking) { timers.push(setTimeout(next, 700)); } };
+      idx++;
+      window.speechSynthesis.speak(u);
+    }
+    next();
+    showStatus();
+  }
+
+  // ---------- status ----------
+  var extra = "";
+  function setStatus(text, live) {
+    var el = document.getElementById("status");
+    el.textContent = text;
+    el.className = live ? "live" : "";
+  }
+  function setStatusExtra(x) { extra = x; showStatus(); }
+  function showStatus() {
+    if (!playing) {
+      setStatus("Stopped — tap a signal to start", false);
+      document.getElementById("warn").textContent = "";
+      return;
+    }
+    var parts = [SIG_NAMES[playing]];
+    if (playing === "tone") { parts[0] = "Tone " + FREQ_NAMES[state.freq]; }
+    if (playing === "sweep" && extra) { parts[0] += " (" + extra + ")"; }
+    if (playing !== "voice") {
+      parts.push(state.level + " dBFS");
+      var ch = CHAN_NAMES[state.chan];
+      if (state.chan === "alt") { ch += " — now " + (altLeft ? "LEFT" : "RIGHT"); }
+      parts.push(ch);
+    } else {
+      parts.push("level = iPad volume");
+    }
+    setStatus("▶ " + parts.join("  ·  "), true);
+    var w = "";
+    if (playing !== "voice" && state.level >= -6) {
+      w = "High level — use the DI pad, and watch the mixer's input meter.";
+    }
+    document.getElementById("warn").textContent = w;
+  }
+
+  // ---------- UI wiring ----------
+  function markOn(attr, value) {
+    var els = document.querySelectorAll("[data-" + attr + "]");
+    for (var i = 0; i < els.length; i++) {
+      if (String(els[i].getAttribute("data-" + attr)) === String(value)) {
+        els[i].classList.add("on");
+      } else {
+        els[i].classList.remove("on");
+      }
+    }
+  }
+
+  function bind(attr, handler) {
+    var els = document.querySelectorAll("[data-" + attr + "]");
+    for (var i = 0; i < els.length; i++) {
+      els[i].addEventListener("click", function () {
+        handler(this.getAttribute("data-" + attr));
+      }, false);
+    }
+  }
+
+  bind("sig", function (v) { play(v); markOn("sig", v); });
+
+  bind("freq", function (v) {
+    state.freq = parseInt(v, 10);
+    markOn("freq", v);
+    if (playing === "tone" && src && src.frequency) {
+      src.frequency.setValueAtTime(state.freq, ctx.currentTime);
+    }
+    showStatus();
+  });
+
+  bind("level", function (v) {
+    state.level = parseInt(v, 10);
+    markOn("level", v);
+    applyRouting(0.03);
+    showStatus();
+  });
+
+  bind("chan", function (v) {
+    state.chan = v;
+    altLeft = true;
+    markOn("chan", v);
+    applyRouting(0.02);
+    showStatus();
+  });
+
+  document.getElementById("stop").addEventListener("click", function () {
+    stopAll();
+    markOn("sig", "none");
+    showStatus();
+  }, false);
+
+  // unlock audio on the first touch anywhere (iOS needs a user gesture)
+  document.addEventListener("touchend", function unlockOnce() {
+    initAudio();
+    document.removeEventListener("touchend", unlockOnce, false);
+  }, false);
+
+  // when an updated version is downloaded, switch to it
+  if (window.applicationCache) {
+    window.applicationCache.addEventListener("updateready", function () {
+      try { window.applicationCache.swapCache(); } catch (e) {}
+      if (!playing) { window.location.reload(); }
+    }, false);
+  }
+
+  markOn("freq", state.freq);
+  markOn("level", state.level);
+  markOn("chan", state.chan);
+})();
+</script>
+</body>
+</html>

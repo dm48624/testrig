@@ -1,0 +1,10 @@
+CACHE MANIFEST
+# Audio Test Rig - version 1
+# Change the version number above whenever index.html is updated,
+# so the iPad downloads the new copy.
+
+CACHE:
+index.html
+
+NETWORK:
+*
